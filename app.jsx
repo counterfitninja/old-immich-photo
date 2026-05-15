@@ -161,6 +161,7 @@ export default function App() {
   const [isUploadingToImmich, setIsUploadingToImmich] = useState(false);
   const [immichUploadMessage, setImmichUploadMessage] = useState(null);
   const [photoDate, setPhotoDate] = useState('');
+  const [photoDateSource, setPhotoDateSource] = useState(null);
 
   // Load persisted config from local storage on mount
   useEffect(() => {
@@ -212,9 +213,10 @@ export default function App() {
       const baseUrl = immichUrl.replace(/\/$/, '');
 
       // 3. Upload Asset
-      const uploadRes = await fetch(`${baseUrl}/api/assets`, {
+      const uploadRes = await fetch('/api/immich/assets', {
         method: 'POST',
         headers: {
+          'x-immich-url': baseUrl,
           'x-api-key': immichApiKey,
           'Accept': 'application/json'
         },
@@ -230,9 +232,10 @@ export default function App() {
 
       // 4. Update Metadata (Description) if AI analysis exists
       if (aiAnalysis && assetId) {
-        const updateRes = await fetch(`${baseUrl}/api/assets/${assetId}`, {
+        const updateRes = await fetch(`/api/immich/assets/${assetId}`, {
           method: 'PUT',
           headers: {
+            'x-immich-url': baseUrl,
             'x-api-key': immichApiKey,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
@@ -255,7 +258,7 @@ export default function App() {
       if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
         setImmichUploadMessage({ 
           type: 'error', 
-          text: 'Upload blocked by your browser\'s security rules (CORS or Mixed Content). To fix this, you must self-host this application locally.' 
+          text: 'Upload failed to reach the local proxy server. Check that this app is running from your Node server and the Immich URL is reachable.' 
         });
       } else {
         console.error("Immich upload error:", error);
@@ -297,12 +300,57 @@ export default function App() {
       img.src = dataUrl;
     });
 
+  const extractDateForPicker = (analysisText) => {
+    if (!analysisText) return '';
+
+    const normalizedText = analysisText.replace(/\r/g, '');
+    const dateLabelMatch = normalizedText.match(/Detected Date:\s*([^\n]+)/i);
+    const rawDate = dateLabelMatch ? dateLabelMatch[1].trim() : normalizedText;
+
+    if (!rawDate || /^unknown\b/i.test(rawDate) || /^none\b/i.test(rawDate)) {
+      return '';
+    }
+
+    const isoDateMatch = rawDate.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+    if (isoDateMatch) {
+      return `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`;
+    }
+
+    const isoMonthMatch = rawDate.match(/\b(\d{4})-(\d{2})\b/);
+    if (isoMonthMatch) {
+      return `${isoMonthMatch[1]}-${isoMonthMatch[2]}-01`;
+    }
+
+    const monthNameMatch = rawDate.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})\b/i);
+    if (monthNameMatch) {
+      const parsedDate = new Date(`${monthNameMatch[1]} ${monthNameMatch[2]}, ${monthNameMatch[3]}`);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        return parsedDate.toISOString().slice(0, 10);
+      }
+    }
+
+    const monthYearMatch = rawDate.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b/i);
+    if (monthYearMatch) {
+      const parsedDate = new Date(`${monthYearMatch[1]} 1, ${monthYearMatch[2]}`);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        return parsedDate.toISOString().slice(0, 10);
+      }
+    }
+
+    const yearMatch = rawDate.match(/\b(18|19|20)\d{2}\b/);
+    if (yearMatch) {
+      return `${yearMatch[0]}-01-01`;
+    }
+
+    return '';
+  };
+
   const analyzeWithAI = async () => {
     if (!backImage) return;
     setIsAnalyzing(true);
     setAiAnalysis(null);
 
-    const PROMPT = "You are an expert archivist. I am giving you the back of an old photograph containing handwritten notes, and optionally the front of the photograph.\n\n1. Please carefully transcribe any handwriting or text on the back under the heading 'Transcription:'.\n2. Provide a brief summary or deduction about the photograph based on the text and visual context under the heading 'Historical Context:'.";
+    const PROMPT = "You are an expert archivist. I am giving you the back of an old photograph containing handwritten notes, and optionally the front of the photograph.\n\n1. Please carefully transcribe any handwriting or text on the back under the heading 'Transcription:'.\n2. If you can identify any date from the handwriting or context, include exactly one line under the heading 'Detected Date:' using one of these formats only: YYYY-MM-DD, YYYY-MM, YYYY, or Unknown.\n3. Provide a brief summary or deduction about the photograph based on the text and visual context under the heading 'Historical Context:'.";
 
     try {
       if (aiProvider === 'lmstudio') {
@@ -340,7 +388,13 @@ export default function App() {
           console.error('LM Studio error:', result);
           setAiAnalysis(`LM Studio Error: ${msg}`);
         } else {
-          setAiAnalysis(result.choices[0].message.content);
+          const analysisText = result.choices[0].message.content;
+          setAiAnalysis(analysisText);
+          const detectedDate = extractDateForPicker(analysisText);
+          if (detectedDate) {
+            setPhotoDate(detectedDate);
+            setPhotoDateSource('ai');
+          }
         }
 
       } else {
@@ -374,7 +428,13 @@ export default function App() {
         } else if (result.promptFeedback?.blockReason) {
           setAiAnalysis(`Request blocked by safety filter: ${result.promptFeedback.blockReason}`);
         } else if (result.candidates?.length > 0) {
-          setAiAnalysis(result.candidates[0].content.parts[0].text);
+          const analysisText = result.candidates[0].content.parts[0].text;
+          setAiAnalysis(analysisText);
+          const detectedDate = extractDateForPicker(analysisText);
+          if (detectedDate) {
+            setPhotoDate(detectedDate);
+            setPhotoDateSource('ai');
+          }
         } else {
           console.error('Unexpected Gemini response:', result);
           setAiAnalysis('Unexpected response from API. Check console for details.');
@@ -586,11 +646,22 @@ export default function App() {
                   <input
                     type="date"
                     value={photoDate}
-                    onChange={(e) => setPhotoDate(e.target.value)}
+                    onChange={(e) => {
+                      setPhotoDate(e.target.value);
+                      setPhotoDateSource(e.target.value ? 'manual' : null);
+                    }}
                     className="p-2 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto"
                     title="Set the date this photo was taken for your Immich timeline"
                   />
-                  <p className="text-xs text-blue-600/80 sm:ml-2">Optional: Places the photo correctly in your Immich timeline.</p>
+                  <div className="text-xs text-blue-600/80 sm:ml-2 space-y-1">
+                    <p>Optional: Places the photo correctly in your Immich timeline.</p>
+                    {photoDate && photoDateSource === 'ai' && (
+                      <p className="font-medium text-blue-700">Auto-detected from notes. You can edit it if needed.</p>
+                    )}
+                    {photoDate && photoDateSource === 'manual' && (
+                      <p className="font-medium text-blue-700">Set manually.</p>
+                    )}
+                  </div>
                 </div>
               )}
 

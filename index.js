@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const DIST_DIR = path.join(__dirname, 'dist');
 const DEFAULT_PORT = 8000;
+const IMMICH_BASE_URL = (process.env.IMMICH_BASE_URL || '').trim().replace(/\/$/, '');
 
 function resolvePort() {
   const rawPort =
@@ -63,6 +64,79 @@ function sendFile(res, filePath) {
   });
 }
 
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload));
+}
+
+function getImmichTargetUrl(reqUrl, immichBaseUrl) {
+  const requestPath = decodeURIComponent((reqUrl || '/').split('?')[0]);
+  const proxyPrefix = '/api/immich';
+
+  if (!requestPath.startsWith(proxyPrefix)) {
+    return null;
+  }
+
+  const immichPath = requestPath.slice(proxyPrefix.length) || '/';
+  return `${immichBaseUrl}${immichPath}`;
+}
+
+async function proxyImmichRequest(req, res) {
+  const immichBaseUrl = IMMICH_BASE_URL || (req.headers['x-immich-url'] || '').toString().replace(/\/$/, '');
+  const apiKey = (req.headers['x-api-key'] || '').toString();
+
+  if (!immichBaseUrl || !apiKey) {
+    sendJson(res, 400, { error: 'Missing Immich URL or API key.' });
+    return;
+  }
+
+  const targetUrl = getImmichTargetUrl(req.url, immichBaseUrl);
+  if (!targetUrl) {
+    sendJson(res, 400, { error: 'Invalid Immich proxy path.' });
+    return;
+  }
+
+  try {
+    const incomingContentType = req.headers['content-type'];
+    const incomingContentLength = req.headers['content-length'];
+
+    const upstreamHeaders = {
+      'x-api-key': apiKey,
+      'Accept': 'application/json',
+    };
+
+    if (incomingContentType) {
+      upstreamHeaders['Content-Type'] = incomingContentType;
+    }
+
+    if (incomingContentLength) {
+      upstreamHeaders['Content-Length'] = incomingContentLength;
+    }
+
+    const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const upstreamResponse = await fetch(targetUrl, {
+      method: req.method,
+      headers: upstreamHeaders,
+      body: hasBody ? req : undefined,
+      duplex: hasBody ? 'half' : undefined,
+    });
+
+    const responseBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
+    const responseHeaders = {};
+    const responseContentType = upstreamResponse.headers.get('content-type');
+
+    if (responseContentType) {
+      responseHeaders['Content-Type'] = responseContentType;
+    }
+
+    res.writeHead(upstreamResponse.status, responseHeaders);
+    res.end(responseBuffer);
+  } catch (error) {
+    console.error('Immich proxy error:', error);
+    sendJson(res, 502, { error: 'Immich proxy request failed.' });
+  }
+}
+
 if (!fs.existsSync(DIST_DIR)) {
   console.error('dist/ not found. Run "npm run build" before starting the server.');
   process.exit(1);
@@ -70,6 +144,12 @@ if (!fs.existsSync(DIST_DIR)) {
 
 const server = http.createServer((req, res) => {
   const reqPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+  if (reqPath.startsWith('/api/immich')) {
+    proxyImmichRequest(req, res);
+    return;
+  }
+
   const safePath = path.normalize(reqPath).replace(/^([.][.][/\\])+/, '');
   const filePath = path.join(DIST_DIR, safePath === '/' ? 'index.html' : safePath);
 
