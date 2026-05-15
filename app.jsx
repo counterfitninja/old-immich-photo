@@ -176,6 +176,19 @@ export default function App() {
     setAiProvider(storedProvider);
     setLmStudioUrl(storedLmUrl);
     setLmStudioModel(storedLmModel);
+
+    // Runtime config endpoint allows deployment-time URL configuration
+    fetch('/api/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((config) => {
+        if (!storedUrl && config?.immichBaseUrl) {
+          setImmichUrl(config.immichBaseUrl);
+          localStorage.setItem('immichUrl', config.immichBaseUrl);
+        }
+      })
+      .catch(() => {
+        // Ignore optional runtime config fetch failures
+      });
   }, []);
 
   const updateImmichUrl = (e) => {
@@ -280,6 +293,44 @@ export default function App() {
     setBackImage(null);
     setMergedImage(null);
     setAiAnalysis(null);
+  };
+
+  const triggerDownload = (href, filename) => {
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadImageAndMetadata = () => {
+    if (!mergedImage) return;
+
+    const imageFileName = 'combined-photo.jpg';
+    const metadataFileName = 'combined-photo.metadata.json';
+
+    const metadata = {
+      imageFileName,
+      exportedAt: new Date().toISOString(),
+      layout,
+      timelineDate: photoDate || null,
+      timelineDateSource: photoDateSource || null,
+      aiAnalysis: aiAnalysis || null,
+      includedSides: {
+        front: Boolean(frontImage),
+        back: Boolean(backImage)
+      }
+    };
+
+    triggerDownload(mergedImage, imageFileName);
+
+    const metadataBlob = new Blob([JSON.stringify(metadata, null, 2)], {
+      type: 'application/json;charset=utf-8'
+    });
+    const metadataUrl = URL.createObjectURL(metadataBlob);
+    triggerDownload(metadataUrl, metadataFileName);
+    URL.revokeObjectURL(metadataUrl);
   };
 
   // Resize a data URL to fit within maxPx on its longest side, JPEG quality 0.85
@@ -626,13 +677,12 @@ export default function App() {
                     </button>
                   )}
                   {mergedImage && (
-                    <a
-                      href={mergedImage}
-                      download="combined-photo.jpg"
+                    <button
+                      onClick={downloadImageAndMetadata}
                       className="bg-green-600 hover:bg-green-700 text-white text-sm font-bold py-1.5 px-4 rounded-lg transition-colors flex items-center gap-2 shadow-sm"
                     >
-                      <Download size={16} /> Save Image
-                    </a>
+                      <Download size={16} /> Save Image + Metadata
+                    </button>
                   )}
                 </div>
               </div>

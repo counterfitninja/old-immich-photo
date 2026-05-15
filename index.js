@@ -7,8 +7,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DIST_DIR = path.join(__dirname, 'dist');
+const RUNTIME_CONFIG_PATH = path.join(__dirname, 'runtime-config.json');
 const DEFAULT_PORT = 8000;
-const IMMICH_BASE_URL = (process.env.IMMICH_BASE_URL || '').trim().replace(/\/$/, '');
+
+function loadRuntimeConfig() {
+  try {
+    if (!fs.existsSync(RUNTIME_CONFIG_PATH)) {
+      return {};
+    }
+
+    const raw = fs.readFileSync(RUNTIME_CONFIG_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    console.warn('Failed to read runtime-config.json, continuing with defaults:', error.message);
+    return {};
+  }
+}
+
+const runtimeConfig = loadRuntimeConfig();
+const IMMICH_BASE_URL = (
+  process.env.IMMICH_BASE_URL ||
+  process.env.PELICAN_IMMICH_BASE_URL ||
+  runtimeConfig.immichBaseUrl ||
+  ''
+)
+  .toString()
+  .trim()
+  .replace(/\/$/, '');
 
 function resolvePort() {
   const rawPort =
@@ -144,6 +170,13 @@ if (!fs.existsSync(DIST_DIR)) {
 
 const server = http.createServer((req, res) => {
   const reqPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+  if (req.method === 'GET' && reqPath === '/api/config') {
+    sendJson(res, 200, {
+      immichBaseUrl: IMMICH_BASE_URL,
+    });
+    return;
+  }
 
   if (reqPath.startsWith('/api/immich')) {
     proxyImmichRequest(req, res);
