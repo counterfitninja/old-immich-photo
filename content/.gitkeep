@@ -1,0 +1,2 @@
+# Empty content directory — Pelican requires this folder to exist even when we
+# don't generate any content pages (the React app is served from dist/).
