@@ -201,6 +201,37 @@ export default function App() {
     localStorage.setItem('immichApiKey', e.target.value);
   };
 
+  const buildImmichApiBase = (url) => {
+    const cleanBase = url.trim().replace(/\/+$/, '');
+    return /\/api$/i.test(cleanBase) ? cleanBase : `${cleanBase}/api`;
+  };
+
+  const requestImmich = async (path, options = {}) => {
+    const baseUrl = immichUrl.replace(/\/+$/, '');
+
+    const proxyResponse = await fetch(`/api/immich${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        'x-immich-url': baseUrl,
+        'x-api-key': immichApiKey,
+      },
+    });
+
+    // Some deployments host only static files and do not provide /api/immich proxy routes.
+    if (proxyResponse.status !== 404) {
+      return proxyResponse;
+    }
+
+    return fetch(`${buildImmichApiBase(baseUrl)}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        'x-api-key': immichApiKey,
+      },
+    });
+  };
+
   const uploadToImmich = async () => {
     if (!mergedImage || !immichUrl || !immichApiKey) return;
     setIsUploadingToImmich(true);
@@ -222,15 +253,10 @@ export default function App() {
       formData.append('fileModifiedAt', dateToUse);
       formData.append('isFavorite', 'false');
 
-      // Strip trailing slash from URL if present
-      const baseUrl = immichUrl.replace(/\/$/, '');
-
       // 3. Upload Asset
-      const uploadRes = await fetch('/api/immich/assets', {
+      const uploadRes = await requestImmich('/assets', {
         method: 'POST',
         headers: {
-          'x-immich-url': baseUrl,
-          'x-api-key': immichApiKey,
           'Accept': 'application/json'
         },
         body: formData
@@ -245,11 +271,9 @@ export default function App() {
 
       // 4. Update Metadata (Description) if AI analysis exists
       if (aiAnalysis && assetId) {
-        const updateRes = await fetch(`/api/immich/assets/${assetId}`, {
+        const updateRes = await requestImmich(`/assets/${assetId}`, {
           method: 'PUT',
           headers: {
-            'x-immich-url': baseUrl,
-            'x-api-key': immichApiKey,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
@@ -271,7 +295,7 @@ export default function App() {
       if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
         setImmichUploadMessage({ 
           type: 'error', 
-          text: 'Upload failed to reach the local proxy server. Check that this app is running from your Node server and the Immich URL is reachable.' 
+          text: 'Upload failed to reach Immich. Check the Immich URL, API key, network access, and CORS settings if using direct browser access.' 
         });
       } else {
         console.error("Immich upload error:", error);
