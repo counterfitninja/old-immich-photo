@@ -8,7 +8,23 @@ const __dirname = path.dirname(__filename);
 
 const DIST_DIR = path.join(__dirname, 'dist');
 const DEFAULT_PORT = 8000;
-const PORT = Number(process.env.PORT || process.env.SERVER_PORT || DEFAULT_PORT);
+
+function resolvePort() {
+  const rawPort =
+    process.env.PORT ||
+    process.env.SERVER_PORT ||
+    process.env.PELICAN_PORT ||
+    process.env.PTERODACTYL_PORT ||
+    '';
+
+  const parsed = Number(rawPort);
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
+    return parsed;
+  }
+  return DEFAULT_PORT;
+}
+
+const PORT = resolvePort();
 const HOST = '0.0.0.0';
 
 const CONTENT_TYPES = {
