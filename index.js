@@ -36,6 +36,23 @@ const IMMICH_BASE_URL = (
   .trim()
   .replace(/\/$/, '');
 
+const LM_STUDIO_URL = (
+  process.env.LM_STUDIO_URL ||
+  process.env.PELICAN_LM_STUDIO_URL ||
+  runtimeConfig.lmStudioUrl ||
+  'http://localhost:1234'
+)
+  .toString()
+  .trim()
+  .replace(/\/$/, '');
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Accept, x-api-key, Authorization, x-immich-url',
+  'Access-Control-Max-Age': '86400',
+};
+
 function resolvePort() {
   const rawPort =
     process.env.PORT ||
@@ -168,13 +185,56 @@ if (!fs.existsSync(DIST_DIR)) {
   process.exit(1);
 }
 
+async function proxyLmStudio(req, res) {
+  // Strip the /api/ai prefix and forward the rest of the path to LM Studio
+  const reqPath = decodeURIComponent((req.url || '/').split('?')[0]);
+  const upstreamPath = reqPath.replace(/^\/api\/ai/, '') || '/';
+  const targetUrl = `${LM_STUDIO_URL}${upstreamPath}`;
+
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+      body: body.length ? body : undefined,
+    });
+
+    const responseBuffer = Buffer.from(await upstream.arrayBuffer());
+    res.writeHead(upstream.status, {
+      'Content-Type': upstream.headers.get('content-type') || 'application/json',
+      ...CORS_HEADERS,
+    });
+    res.end(responseBuffer);
+  } catch (err) {
+    console.error('LM Studio proxy error:', err);
+    res.writeHead(502, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ error: { message: `LM Studio proxy error: ${err.message}` } }));
+  }
+}
+
 const server = http.createServer((req, res) => {
   const reqPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+  // Handle CORS preflight for all /api/* proxy routes
+  if (req.method === 'OPTIONS' && reqPath.startsWith('/api/')) {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
 
   if (req.method === 'GET' && reqPath === '/api/config') {
     sendJson(res, 200, {
       immichBaseUrl: IMMICH_BASE_URL,
+      lmStudioProxy: true,
     });
+    return;
+  }
+
+  if (reqPath.startsWith('/api/ai')) {
+    proxyLmStudio(req, res);
     return;
   }
 

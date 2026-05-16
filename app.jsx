@@ -171,13 +171,11 @@ export default function App() {
     setImmichApiKey(storedKey);
 
     const storedProvider = localStorage.getItem('aiProvider') || 'lmstudio';
-    const storedLmUrl = localStorage.getItem('lmStudioUrl') || 'http://localhost:1234';
     const storedLmModel = localStorage.getItem('lmStudioModel') || 'gemma-4';
     setAiProvider(storedProvider);
-    setLmStudioUrl(storedLmUrl);
     setLmStudioModel(storedLmModel);
 
-    // Runtime config endpoint allows deployment-time URL configuration
+    // Runtime config endpoint — auto-configure proxy URLs for remote deployments
     fetch('/api/config')
       .then((res) => (res.ok ? res.json() : null))
       .then((config) => {
@@ -185,9 +183,23 @@ export default function App() {
           setImmichUrl(config.immichBaseUrl);
           localStorage.setItem('immichUrl', config.immichBaseUrl);
         }
+        // When the server exposes an LM Studio proxy, prefer it over a direct
+        // localhost URL (which is unreachable from an HTTPS page).
+        const isRemote = window.location.hostname !== 'localhost' &&
+                         window.location.hostname !== '127.0.0.1';
+        const savedLmUrl = localStorage.getItem('lmStudioUrl');
+        if (config?.lmStudioProxy && isRemote && !savedLmUrl) {
+          setLmStudioUrl('/api/ai');
+        } else {
+          setLmStudioUrl(savedLmUrl || (isRemote ? '/api/ai' : 'http://localhost:1234'));
+        }
       })
       .catch(() => {
-        // Ignore optional runtime config fetch failures
+        // Fallback when /api/config is unavailable (e.g. plain vite dev server)
+        const isRemote = window.location.hostname !== 'localhost' &&
+                         window.location.hostname !== '127.0.0.1';
+        const savedLmUrl = localStorage.getItem('lmStudioUrl');
+        setLmStudioUrl(savedLmUrl || (isRemote ? '/api/ai' : 'http://localhost:1234'));
       });
   }, []);
 
@@ -208,19 +220,30 @@ export default function App() {
 
   const requestImmich = async (path, options = {}) => {
     const baseUrl = immichUrl.replace(/\/+$/, '');
+    const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-    const proxyResponse = await fetch(`/api/immich${path}`, {
-      ...options,
-      headers: {
-        ...(options.headers || {}),
-        'x-immich-url': baseUrl,
-        'x-api-key': immichApiKey,
-      },
-    });
+    try {
+      const proxyResponse = await fetch(`/api/immich${path}`, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          'x-immich-url': baseUrl,
+          'x-api-key': immichApiKey,
+        },
+      });
 
-    // Some deployments host only static files and do not provide /api/immich proxy routes.
-    if (proxyResponse.status !== 404) {
-      return proxyResponse;
+      // Keep direct fallback only for local development where CORS can be configured easily.
+      if (proxyResponse.status !== 404) {
+        return proxyResponse;
+      }
+
+      if (!isLocalHost) {
+        throw new Error('This deployment is missing /api/immich. Enable the proxy server (index.js) or configure CORS on Immich for this site origin.');
+      }
+    } catch (error) {
+      if (!isLocalHost) {
+        throw error;
+      }
     }
 
     return fetch(`${buildImmichApiBase(baseUrl)}${path}`, {
@@ -296,6 +319,11 @@ export default function App() {
         setImmichUploadMessage({ 
           type: 'error', 
           text: 'Upload failed to reach Immich. Check the Immich URL, API key, network access, and CORS settings if using direct browser access.' 
+        });
+      } else if (error.message && error.message.includes('missing /api/immich')) {
+        setImmichUploadMessage({
+          type: 'error',
+          text: error.message,
         });
       } else {
         console.error("Immich upload error:", error);
@@ -883,7 +911,7 @@ export default function App() {
             <AlertCircle size={14} className="shrink-0 mt-0.5" />
             <span>
               Your credentials are saved securely in your browser's local storage. 
-              <strong> Note for self-hosters:</strong> Your Immich instance must be configured to allow CORS requests from this domain for uploads to succeed.
+              <strong> Note for self-hosters:</strong> Hosted deployments should provide an /api/immich proxy route (via index.js). Direct browser uploads require CORS on your Immich server.
             </span>
           </p>
 
